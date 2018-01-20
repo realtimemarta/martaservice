@@ -9,32 +9,195 @@ Parameters:
     Description: AWS CodeStar projectID used to associate new resources to team members
 
 Resources:
-  GetHelloWorld:
+  MartaDataLoadFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: com.aws.codestar.projecttemplates.handler.HelloWorldHandler
+      Handler: org.marta.data.LoadMartaDataToCache
       Runtime: java8
       Role:
-        Fn::ImportValue:
-          !Join ['-', [!Ref 'ProjectId', !Ref 'AWS::Region', 'LambdaTrustRole']]
+        Fn::GetAtt:
+        - LambdaRole
+        - Arn 
+      Timeout: 60
+      MemorySize: 1024 
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref FunctionSecurityGroupS3
+          - !Ref FunctionSecurityGroup
+        SubnetIds:
+          - !ImportValue "marta-private-subnet"
+      Environment:
+        Variables:
+          ELASTICACHE_HOST:
+            Fn::GetAtt: ["ECCluster", "RedisEndpoint.Address"]
+          ELASTICACHE_PORT:
+            Fn::GetAtt: ["ECCluster", "RedisEndpoint.Port"]
       Events:
-        GetEvent:
-          Type: Api
+        Timer:
+          Type: S3
           Properties:
-            Path: /
-            Method: get
+            Bucket: !Ref FilesBucket
+            Events: s3:ObjectCreated:*
 
-  PostHelloWorld:
+  RealtimeDataFlushFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: com.aws.codestar.projecttemplates.handler.HelloWorldHandler
+      Handler: org.marta.realtime.RealtimeDataFlush
       Runtime: java8
-      Role:
-        Fn::ImportValue:
-          !Join ['-', [!Ref 'ProjectId', !Ref 'AWS::Region', 'LambdaTrustRole']]
+      Policies: "AWSLambdaVPCAccessExecutionRole"
+      Timeout: 10
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref FunctionSecurityGroup
+        SubnetIds:
+          - !ImportValue "marta-private-subnet"
+      Environment:
+        Variables:
+          ELASTICACHE_HOST:
+            Fn::GetAtt: ["ECCluster", "RedisEndpoint.Address"]
+          ELASTICACHE_PORT:
+            Fn::GetAtt: ["ECCluster", "RedisEndpoint.Port"]
+
+  RealtimeDataHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: org.marta.realtime.RealtimeDataHandler
+      Runtime: java8
+      Policies: "AWSLambdaVPCAccessExecutionRole"
+      Timeout: 10
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref FunctionSecurityGroup
+        SubnetIds:
+          - !ImportValue "marta-private-subnet"
+      Environment:
+        Variables:
+          ELASTICACHE_HOST:
+            Fn::GetAtt: ["ECCluster", "RedisEndpoint.Address"]
+          ELASTICACHE_PORT:
+            Fn::GetAtt: ["ECCluster", "RedisEndpoint.Port"]
+      Events:
+        Timer:
+          Type: Schedule
+          Properties:
+            Schedule: "cron(0/1 0-4,9-23 ? * * *)"
+
+  RealtimeHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: org.marta.server.RealtimeHandler
+      Runtime: java8
+      Policies: "AWSLambdaVPCAccessExecutionRole"
+      Timeout: 10
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref FunctionSecurityGroup
+        SubnetIds:
+          - !ImportValue "marta-private-subnet"
+      Environment:
+        Variables:
+          ELASTICACHE_HOST:
+            Fn::GetAtt: ["ECCluster", "RedisEndpoint.Address"]
+          ELASTICACHE_PORT:
+            Fn::GetAtt: ["ECCluster", "RedisEndpoint.Port"]
       Events:
         PostEvent:
           Type: Api
           Properties:
-            Path: /
+            Path: /api/v1/locations
             Method: post
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+            Effect: Allow
+          - Effect: Allow
+            Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+            Resource: 
+             - "*"
+          - Effect: Allow
+            Action:
+            - ec2:CreateNetworkInterface
+            - ec2:DescribeNetworkInterfaces
+            - ec2:DeleteNetworkInterface
+            Resource:
+             - "*"
+             
+  FunctionSecurityGroupS3:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "marta - Lambda Function S3 Sec Group"
+      VpcId: !ImportValue "marta-vpc"      
+
+  FilesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+    DeletionPolicy: Retain
+    
+  ECCluster:
+    Type: "AWS::ElastiCache::CacheCluster"
+    Properties:
+      Engine: "redis"
+      CacheNodeType: "cache.t2.micro"
+      NumCacheNodes: 1
+      VpcSecurityGroupIds:
+        - !GetAtt ECSecurityGroup.GroupId
+      CacheSubnetGroupName: !Ref ECSubnetGroup
+
+  ECSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "marta - ElastiCache Security Group"
+      VpcId: !ImportValue "marta-vpc"
+      SecurityGroupIngress:
+        -
+          IpProtocol: "tcp"
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref FunctionSecurityGroup
+
+  ECSubnetGroup:
+    Type: "AWS::ElastiCache::SubnetGroup"
+    Properties:
+      Description: "marta - ElastiCache Subnet Group"
+      SubnetIds:
+        - !ImportValue "marta-private-subnet"
+
+  FunctionSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "marta - Lambda Function Security Group"
+      VpcId: !ImportValue "marta-vpc"
+
+Outputs:
+  ApiDomain:
+    Description: "API Domain"
+    Value: !Sub "${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com"
+    Export:
+      Name: "marta-location-api"
+  CacheEndpoint:
+    Description: "ElastiCache Endpoint"
+    Value:
+      Fn::GetAtt: ["ECCluster", "RedisEndpoint.Address"]
