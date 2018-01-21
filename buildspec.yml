@@ -5,6 +5,7 @@ phases:
     commands:
       - echo Entering build phase...
       - echo Build started on `date`
+      - aws s3 cp --recursive public/ s3://aws-website-martarealtime/
       - mvn package shade:shade
       - mv target/martaservice-1.0.jar .
       - unzip martaservice-1.0.jar
