@@ -7,6 +7,7 @@ var center;
 var rad;
 var watchID;
 function initMap() {
+	
   var latLng = new google.maps.LatLng(position[0], position[1]);
 
   var mapOptions = {
